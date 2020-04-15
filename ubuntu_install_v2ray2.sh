@@ -58,9 +58,7 @@ function getData()
     echo -e "  ${red}2. 域名的某个主机名解析指向当前服务器ip（${IP}）${plain}"
     echo " "
     read -p "确认满足按y，按其他退出脚本：" answer
-    if [ "${answer}" != "y" ]; then
-        exit 0
-    fi
+    [ "${answer}" != "y" ] && exit 0
 
     while true
     do
@@ -96,14 +94,25 @@ function getData()
     done
     
     read -p "请输入Nginx端口[100-65535的一个数字，默认443]：" port
-    if [ -z "${port}" ]; then
-        port=443
-    fi
-       
+    [ -z "${port}" ] && port=443
+    
+    read -p "是否安装BBR（安装请按y，不安装请输n，不输则默认安装）:" needBBR
+    [ -z "$needBBR" ] && needBBR=y
+    [ "$needBBR" = "Y" ] && needBBR=y
+
     len=${#sites[@]}
     ((len--))
-    index=`shuf -i0-${len} -n1`
-    site=$sites[$index]
+    while true
+    do
+        index=`shuf -i0-${len} -n1`
+        site=${sites[$index]}
+        host=`echo ${site} | cut -d/ -f3`
+        ip=`host ${host} | grep -oE "[1-9][0-9.]+[0-9]" | head -n1`
+        if [ "$ip" != "" ]; then
+            echo "${ip}  ${host}" >> /etc/hosts
+            break
+        fi
+    done
 }
 
 function preinstall()
@@ -126,8 +135,11 @@ function installV2ray()
     bash <(curl -L -s https://install.direct/go.sh)
 
     if [ ! -f /etc/v2ray/config.json ]; then
-        echo "安装失败，请到 https://www.hijk.pw 网站反馈"
-        exit 1
+        bash <(curl -sL https://raw.githubusercontent.com/hijkpw/scripts/master/goV2.sh)
+        if [ ! -f /etc/v2ray/config.json ]; then
+            echo "安装失败，请到 https://www.hijk.pw 网站反馈"
+            exit 1
+        fi
     fi
 
     logsetting=`cat /etc/v2ray/config.json|grep loglevel`
@@ -182,8 +194,8 @@ function installNginx()
     pip3 install --upgrade pip
     pip3 install wheel
     res=`pip3 list | grep crypto | awk '{print $2}'`
-    if [ "$res" < "2.8" ]; then
-        pip3 uninstall cryptography
+    if [[ "$res" < "2.8" ]]; then
+        pip3 uninstall -y cryptography
         cd /usr/lib/python3/dist-packages
         rm -r cryptoggraphy cryptography-2.1.4.egg-info
         cd -
@@ -309,6 +321,10 @@ function setFirewall()
 
 function installBBR()
 {
+    if [ "$needBBR" != "y" ]; then
+        bbr=true
+        return
+    fi
     result=$(lsmod | grep bbr)
     if [ "$result" != "" ]; then
         echo BBR模块已安装
@@ -321,7 +337,7 @@ function installBBR()
     res=`hostnamectl | grep -i openvz`
     if [ "$res" != "" ]; then
         echo openvz机器，跳过安装
-        bbr=false
+        bbr=true
         return
     fi
 
@@ -338,6 +354,11 @@ function installBBR()
 
 function info()
 {
+    if [ ! -f /etc/v2ray/config.json ]; then
+        echo "v2ray未安装"
+        exit 1
+    fi
+    
     ip=`curl -s -4 icanhazip.com`
     res=`netstat -nltp | grep v2ray`
     [ -z "$res" ] && v2status="${red}已停止${plain}" || v2status="${green}正在运行${plain}"
@@ -346,6 +367,10 @@ function info()
     alterid=`cat /etc/v2ray/config.json | grep alterId | cut -d: -f2 | tr -d \",' '`
     network=`cat /etc/v2ray/config.json | grep network | cut -d: -f2 | tr -d \",' '`
     domain=`cat /etc/v2ray/config.json | grep Host | cut -d: -f2 | tr -d \",' '`
+    if [ -z "$domain" ]; then
+        echo "不是伪装版本的v2ray"
+        exit 1
+    fi
     path=`cat /etc/v2ray/config.json | grep path | cut -d: -f2 | tr -d \",' '`
     port=`cat /etc/nginx/conf.d/${domain}.conf | grep -i ssl | head -n1 | awk '{print $2}'`
     security="auto"
@@ -435,6 +460,6 @@ case "$action" in
         ;;
     *)
         echo "参数错误"
-        echo "用法: `basename $0` [install|uninstall]"
+        echo "用法: `basename $0` [install|uninstall|info]"
         ;;
 esac

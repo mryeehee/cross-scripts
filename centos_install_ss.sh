@@ -125,7 +125,7 @@ function getData()
             method="chacha20-ietf-poly1305"
             ;;
         15)
-            method="xchacha20-ietf--poly1305"
+            method="xchacha20-ietf-poly1305"
             ;;
         *)
             echo "无效的选择，使用默认的aes-256-cfb"
@@ -148,7 +148,7 @@ function preinstall()
     fi
     
     echo "安装必要软件"
-    yum install -y epel-release telnet wget vim net-tools unzip
+    yum install -y epel-release telnet wget vim net-tools unzip tar
     yum install -y openssl openssl-devel gettext gcc autoconf libtool automake make asciidoc xmlto udns-devel libev-devel pcre pcre-devel mbedtls mbedtls-devel libsodium libsodium-devel c-ares c-ares-devel
 
     if [ -s /etc/selinux/config ] && grep 'SELINUX=enforcing' /etc/selinux/config; then

@@ -95,14 +95,25 @@ function getData()
     done
     
     read -p "请输入Nginx端口[100-65535的一个数字，默认443]：" port
-    if [ -z "${port}" ]; then
-        port=443
-    fi
+    [ -z "${port}" ] && port=443
+
+    read -p "是否安装BBR（安装请按y，不安装请输n，不输则默认安装）:" needBBR
+    [ -z "$needBBR" ] && needBBR=y
+    [ "$needBBR" = "Y" ] && needBBR=y
     
     len=${#sites[@]}
     ((len--))
-    index=`shuf -i0-${len} -n1`
-    site=$sites[$index]
+    while true
+    do
+        index=`shuf -i0-${len} -n1`
+        site=${sites[$index]}
+        host=`echo ${site} | cut -d/ -f3`
+        ip=`host ${host} | grep -oE "[1-9][0-9.]+[0-9]" | head -n1`
+        if [ "$ip" != "" ]; then
+            echo "${ip}  ${host}" >> /etc/hosts
+            break
+        fi
+    done
 }
 
 function preinstall()
@@ -129,8 +140,11 @@ function installV2ray()
     bash <(curl -L -s https://install.direct/go.sh)
 
     if [ ! -f /etc/v2ray/config.json ]; then
-        echo "安装失败，请到 https://www.hijk.pw 网站反馈"
-        exit 1
+        bash <(curl -sL https://raw.githubusercontent.com/hijkpw/scripts/master/goV2.sh)
+        if [ ! -f /etc/v2ray/config.json ]; then
+            echo "安装失败，请到 https://www.hijk.pw 网站反馈"
+            exit 1
+        fi
     fi
 
     logsetting=`cat /etc/v2ray/config.json|grep loglevel`
@@ -164,8 +178,21 @@ function installV2ray()
 
 function installNginx()
 {
+    bt=false
+    confpath="/etc/nginx/conf.d/"
     yum install -y nginx
-    systemctl stop nginx
+    if [ "$?" != "0" ]; then
+        res=`which nginx`
+        if [ "$?" != "0" ]; then
+            echo "您安装了宝塔，请在宝塔后台安装nginx后再运行本脚本"
+            exit 1
+        fi
+        bt=true
+        confpath="/www/server/panel/vhost/nginx/"
+        nginx -s stop
+    else
+        systemctl stop nginx
+    fi
     res=`netstat -ntlp| grep -E ':80|:443'`
     if [ "${res}" != "" ]; then
         echo " 其他进程占用了80或443端口，请先关闭再运行一键脚本"
@@ -173,6 +200,7 @@ function installNginx()
         echo ${res}
         exit 1
     fi
+    
     res=`which pip3`
     if [ "$?" != "0" ]; then
         yum install -y python3 python3-pip
@@ -193,10 +221,11 @@ function installNginx()
         exit 1
     fi
 
-    if [ ! -f /etc/nginx/nginx.conf.bak ]; then
-        mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
-    fi
-    cat > /etc/nginx/nginx.conf<<-EOF
+    if [ "$bt" = "false" ]; then
+        if [ ! -f /etc/nginx/nginx.conf.bak ]; then
+            mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+        fi
+        cat > /etc/nginx/nginx.conf<<-EOF
 user nginx;
 worker_processes auto;
 error_log /var/log/nginx/error.log;
@@ -232,8 +261,11 @@ http {
 }
 EOF
 
-    mkdir -p /etc/nginx/conf.d;
-    cat > /etc/nginx/conf.d/${domain}.conf<<-EOF
+        mkdir -p /etc/nginx/conf.d;
+    fi
+    
+    mkdir -p /usr/share/nginx/html;
+    cat > ${confpath}${domain}.conf<<-EOF
 server {
     listen 80;
     server_name ${domain};
@@ -246,7 +278,7 @@ server {
     charset utf-8;
 
     # ssl配置
-    ssl_protocols TLSv1.1 TLSv1.2 TLSv1.3;
+    ssl_protocols TLSv1.1 TLSv1.2;
     ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE:ECDH:AES:HIGH:!NULL:!aNULL:!MD5:!ADH:!RC4;
     ssl_ecdh_curve secp384r1;
     ssl_prefer_server_ciphers on;
@@ -255,9 +287,9 @@ server {
     ssl_session_tickets off;
     ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
-
-    access_log  /var/log/nginx/${domain}.access.log;
-    error_log /var/log/nginx/${domain}.error.log;
+    
+    # placeholder
+    # placeholder
 
     root /usr/share/nginx/html;
     location / {
@@ -279,9 +311,18 @@ server {
 EOF
     res=`cat /etc/crontab | grep certbot`
     if [ "${res}" = "" ]; then
-        echo '0 3 1 */2 0 root systemctl stop nginx ; certbot renew ; systemctl restart nginx' >> /etc/crontab
+        if [ "$bt" = "true" ]; then
+            echo '0 3 1 */2 0 root nginx -s stop; certbot renew ; nginx -c /www/server/nginx/conf/nginx.conf' >> /etc/crontab
+        else
+            echo '0 3 1 */2 0 root systemctl stop nginx ; certbot renew ; systemctl restart nginx' >> /etc/crontab
+        fi
     fi
-    systemctl enable nginx && systemctl restart nginx
+    if [ "$bt" = "false" ]; then
+        systemctl enable nginx && systemctl restart nginx
+    else
+        nginx -c /www/server/nginx/conf/nginx.conf
+    fi
+    
     sleep 3
     res=`netstat -nltp | grep ${port} | grep nginx`
     if [ "${res}" = "" ]; then
@@ -303,6 +344,10 @@ function setFirewall()
 
 function installBBR()
 {
+    if [ "$needBBR" != "y" ]; then
+        bbr=true
+        return
+    fi
     result=$(lsmod | grep bbr)
     if [ "$result" != "" ]; then
         echo BBR模块已安装
@@ -314,7 +359,16 @@ function installBBR()
     res=`hostnamectl | grep -i openvz`
     if [ "$res" != "" ]; then
         echo openvz机器，跳过安装
-        bbr=false
+        bbr=true
+        return
+    fi
+    
+    if [ $main -eq 8 ]; then
+        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_fastopen = 3" >> /etc/sysctl.conf
+        sysctl -p
+        bbr=true
         return
     fi
 
@@ -333,6 +387,11 @@ function installBBR()
 
 function info()
 {
+    if [ ! -f /etc/v2ray/config.json ]; then
+        echo "v2ray未安装"
+        exit 1
+    fi
+    
     ip=`curl -s -4 icanhazip.com`
     res=`netstat -nltp | grep v2ray`
     [ -z "$res" ] && v2status="${red}已停止${plain}" || v2status="${green}正在运行${plain}"
@@ -341,8 +400,16 @@ function info()
     alterid=`cat /etc/v2ray/config.json | grep alterId | cut -d: -f2 | tr -d \",' '`
     network=`cat /etc/v2ray/config.json | grep network | cut -d: -f2 | tr -d \",' '`
     domain=`cat /etc/v2ray/config.json | grep Host | cut -d: -f2 | tr -d \",' '`
+    if [ -z "$domain" ]; then
+        echo "不是伪装版本的v2ray"
+        exit 1
+    fi
     path=`cat /etc/v2ray/config.json | grep path | cut -d: -f2 | tr -d \",' '`
-    port=`cat /etc/nginx/conf.d/${domain}.conf | grep -i ssl | head -n1 | awk '{print $2}'`
+    confpath="/etc/nginx/conf.d/"
+    if [ ! -f $confpath${domain}.conf ]; then
+        confpath="/www/server/panel/vhost/nginx/"
+    fi
+    port=`cat ${confpath}${domain}.conf | grep -i ssl | head -n1 | awk '{print $2}'`
     security="auto"
     
     res=`netstat -nltp | grep ${port} | grep nginx`
@@ -352,7 +419,7 @@ function info()
     echo -e " v2ray运行状态：${v2status}"
     echo -e " v2ray配置文件：${red}/etc/v2ray/config.json${plain}"
     echo -e " nginx运行状态：${ngstatus}"
-    echo -e " nginx配置文件：${red}/etc/nginx/conf.d/${domain}.conf${plain}"
+    echo -e " nginx配置文件：${red}${confpath}${domain}.conf${plain}"
     echo ""
     echo -e "${red}v2ray配置信息：${plain}               "
     echo -e " IP(address):  ${red}${ip}${plain}"
@@ -430,7 +497,7 @@ case "$action" in
         ;;
     *)
         echo "参数错误"
-        echo "用法: `basename $0` [install|uninstall]"
+        echo "用法: `basename $0` [install|uninstall|info]"
         ;;
 esac
 
